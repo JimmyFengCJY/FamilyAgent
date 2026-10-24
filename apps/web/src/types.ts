@@ -77,7 +77,22 @@ export interface Run {
   usage: { input_tokens: number; output_tokens: number };
   participants: string[];
   approvals: Record<string, boolean>;
-  proposal?: { summary: string; actions: string[]; hash: string };
+  intent?: {
+    name: string;
+    label: string;
+    source: string;
+    reason: string;
+    allow_actions: boolean;
+  };
+  decision?: { summary: string; confirmed_at: string };
+  created_task_ids?: string[];
+  proposal?: {
+    kind?: "decision" | "tasks";
+    summary: string;
+    actions: string[];
+    hash: string;
+    required_approvers?: string[];
+  };
   finance_result?: BudgetResult;
   results: Result[];
 }

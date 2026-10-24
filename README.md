@@ -16,11 +16,15 @@ python3 scripts/start.py
 
 停止后记录仍在 `data/familyagent.sqlite3`。不要把 `data/`、密钥或环境文件提交到版本库。此版本面向本机开发验证，默认只监听 127.0.0.1，不应直接暴露到公网。
 
+## 当前优化进度
+
+每轮优化、验证证据、未完成事项和下一步持续记录在 [项目进度](docs/PROGRESS.md)。本轮新增按消息意图路由和独立任务确认，详见 R1。
+
 ## 推荐验证路径
 
 1. **家庭会议**：邀请 Jimmy 与林悦，输入旅行议题。查看主持人、专家、汇总和草案。
-2. Jimmy 确认后，任务仍未创建。在“空间设置”切换到林悦，进入同一会议并确认，再切回 Jimmy 查看任务。
-3. **伙伴聊天**：创建“心事闲聊”。切换家庭成员后，验证对方看不到私密会话与记忆。
+2. Jimmy 确认讨论结论后，切换林悦并确认；这一步仍不会创建任务。切回 Jimmy，在同一会议中选择“整理为任务草案”，预览并再次确认后查看任务。
+3. **伙伴聊天**：普通问答只解释；倾听不弹任务；建议可主动转成草案，确认后才创建。输入框可以选择本条消息的处理方式。切换家庭成员验证私密会话与记忆隔离。
 4. **个人规划**：输入目标与时间约束，确认草案后检查任务清单。完成、重新打开或归档任务。
 5. **预算分析**：修改示例数据，精确计算，再请明理分析。数值使用 Decimal，不靠模型口算。
 6. **角色工作室**：复制预设或创建新角色，调整人格，再开启新会话。旧会话保留旧版本。
@@ -31,23 +35,48 @@ python3 scripts/start.py
 
 ## 接入真实模型
 
-已经实现 Claude Messages API 服务端适配器。使用账号可用的模型 ID，不在前端填写或保存密钥：
+已实现 Claude、DeepSeek、Gemini 三家原生 HTTP 接口，共用结构化结果、错误分类和用量记录。使用账号可用的模型 ID，不在前端填写或保存密钥：
 
-```sh
-export FAMILYAGENT_PROVIDER=anthropic
-export FAMILYAGENT_MODEL='你的模型ID'
-export ANTHROPIC_API_KEY='你的API密钥'
-export FAMILYAGENT_DEMO_LOGIN=0
-python3 scripts/start.py
+| 供应商 | FAMILYAGENT_PROVIDER | 密钥变量 | 模型变量 |
+| --- | --- | --- | --- |
+| Claude | anthropic 或 claude | ANTHROPIC_API_KEY | ANTHROPIC_MODEL |
+| DeepSeek | deepseek | DEEPSEEK_API_KEY | DEEPSEEK_MODEL |
+| Gemini Developer API | gemini | GEMINI_API_KEY | GEMINI_MODEL |
+
+FAMILYAGENT_MODEL 可统一覆盖模型变量；切换供应商前应清除旧值，或设置为目标供应商的模型 ID。不预设“最新”模型，避免账号权限和模型下线差异。Gemini 当前接入 Google AI Studio / Developer API，不包含 Vertex AI 身份认证。
+
+将以下配置填写到项目根目录的 `.env`（不要提交密钥）：
+
+```dotenv
+FAMILYAGENT_PROVIDER=anthropic
+ANTHROPIC_MODEL='你的模型ID'
+ANTHROPIC_API_KEY='你的API密钥'
+FAMILYAGENT_DEMO_LOGIN=0
 ```
+
+保存后运行 `python3 scripts/start.py`。启动脚本显示供应商与模型，不显示密钥；检测到旧服务配置不同会提示停止旧服务，不会静默复用。
 
 需要先停止已有服务，使新环境生效。启用真实模型会产生供应商费用；本版提供模型调用次数和单次输出上限，尚未实现金额/token 总预算硬限制。真实模型连接尚未用用户密钥实测。配置失败会明确报错，不会静默切换到演示。
 
-`.env.example` 仅作配置说明，程序**不会自动读取 `.env`**。开发时可使用终端环境变量。禁用体验登录后，旧体验账号和其会话也不能用于登录；可注册独立账号。
+`scripts/start.py` 会自动读取项目根目录的 `.env`，文件中的配置优先；不再需要手动 source。使用 `--no-env-file` 可完全使用终端环境。直接运行 uvicorn、独立 Worker 或评测命令时仍需自行加载环境变量。禁用体验登录后，旧体验账号和其会话也不能用于登录；可注册独立账号。
 
-适配器接口是 `models.py: ModelGateway.generate(context) → (result, usage)`。可在此增加其他模型供应商，业务编排与工具授权不依赖某个 SDK。
+适配器接口是 `models.py: ModelGateway.generate(context) → (result, usage)`。通过服务端配置切换供应商，业务编排不依赖某个 SDK。每次新运行保存不含密钥的模型配置快照，Worker 配置发生变化时拒绝静默混用模型。截断、拦截和非法结构化输出会失败，格式重试的已报告用量也会记录。
 
-参考：[Claude Messages API](https://platform.claude.com/docs/en/api/messages/create)。
+参考：[Claude Messages API](https://platform.claude.com/docs/en/api/messages/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[Gemini generateContent](https://ai.google.dev/api/generate-content)。三家适配器已使用模拟 HTTP 测试，尚未使用真实密钥验证。
+
+## 基线评测
+
+```sh
+# 20 个合成案例，会议对比单 Agent / 多 Agent，不产生外部调用
+.venv312/bin/python -m evals.run --provider demo
+
+# 本机配置密钥和模型后，先小规模试跑 Claude；--live 明确启用付费调用
+.venv312/bin/python -m evals.run --provider claude --live --case meeting-trip --max-total-calls 8
+```
+
+结果保存在被 Git 忽略的 `evals/results/`：包含输入与结构化输出、模型/数据/代码指纹、耗时、Token、工程检查和人工评分表。默认 26 次运行、正常情况下 50 次演示调用。报告不会把未评审的建议标记为质量通过。
+
+DeepSeek、Gemini 参数、重复实验与人工评分见 [评测说明](evals/README.md)。
 
 ## 开发与测试
 
@@ -85,7 +114,7 @@ npm run test:browser
 | 上下文 | 最近 10 条消息的有界视图、当前问题、角色版本、授权记忆及工具结果 |
 | 记忆 | 手动保存/删除，最近 6 条个人记忆，家庭会议与情绪支持隔离 |
 | 持久运行 | SQLite 队列、步骤检查点、120 秒租约、重启后回收过期租约 |
-| 用户介入 | 暂停、恢复、取消、草案逐成员确认、拒绝后再讨论 |
+| 用户介入 | 暂停、恢复、取消、逐成员确认会议结论；任务单独预览确认 |
 | 审批与幂等 | 草案版本/哈希/有效期，确认与任务创建同一事务，稳定任务 ID |
 | 错误与重试 | 暂时故障有限重试，格式纠正一次，均计入调用预算 |
 | 可观察 | 持久事件、轮询网页、可恢复 SSE、Token 用量，不展示隐藏思维链 |

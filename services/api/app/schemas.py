@@ -30,6 +30,7 @@ class ConversationInput(BaseModel):
     character_ids: list[str] = Field(default_factory=list, max_length=3)
     participants: list[str] = Field(default_factory=list, max_length=12)
     use_memory: bool = False
+    orchestration: Literal["single", "multi"] = "multi"
 
 
 class BudgetItem(BaseModel):
@@ -47,6 +48,7 @@ class MessageInput(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
     max_calls: int = Field(default=8, ge=1, le=12)
     finance: FinanceInput | None = None
+    intent: Literal["auto", "question", "support", "advice", "planning", "task", "discussion"] = "auto"
 
     @field_validator("content")
     @classmethod

@@ -3680,3 +3680,46 @@ button {
     top: 32px;
   }
 }
+
+.intent-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 16px 8px;
+}
+.intent-picker label {
+  font-size: 10px;
+  margin: 0;
+  color: #849381;
+}
+.intent-picker select {
+  width: auto;
+  max-width: 200px;
+  padding: 4px 8px;
+  font-size: 10px;
+  background: #f6f8f4;
+  border-color: #e3e9de;
+  margin: 0;
+}
+.optional-actions {
+  border: 1px dashed #dce4d8;
+  border-radius: 10px;
+  padding: 17px;
+  margin: 16px 0;
+  background: #f7faf5;
+}
+.optional-actions h3 {
+  font-size: 13px;
+}
+.optional-actions p {
+  font-size: 10px;
+  margin: 7px 0 12px;
+}
+.current-intent {
+  padding-bottom: 15px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #e6ece1;
+}
+.current-intent p {
+  margin-top: 6px;
+}

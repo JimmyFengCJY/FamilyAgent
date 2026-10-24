@@ -47,6 +47,7 @@ export default function Workspace({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [maxCalls, setMaxCalls] = useState(8);
+  const [intent, setIntent] = useState("auto");
   const [showBudget, setShowBudget] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [tab, setTab] = useState("overview");
@@ -77,6 +78,7 @@ export default function Workspace({
     };
     setDetail(null);
     setText("");
+    setIntent("auto");
     void fetchDetail();
     const timer = setInterval(fetchDetail, 1200);
     return () => {
@@ -94,9 +96,11 @@ export default function Workspace({
       await api(`/conversations/${id}/messages`, "POST", {
         content,
         max_calls: maxCalls,
+        intent,
         finance,
       });
       setText("");
+      setIntent("auto");
       await Promise.all([load(), refresh()]);
     } catch (e) {
       notify((e as Error).message);
@@ -136,6 +140,17 @@ export default function Workspace({
       setBusy(false);
     }
   }
+  async function proposeTasks() {
+    setBusy(true);
+    try {
+      await api(`/runs/${run!.id}/tasks/proposal`, "POST", {});
+      await Promise.all([load(), refresh()]);
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   if (loadError)
     return (
       <div className="page">
@@ -168,6 +183,22 @@ export default function Workspace({
             ? "帮我梳理本月收支，看看哪些支出可以调整。"
             : "帮我整理今天要做的事情，先找出最重要的一件。";
   const blocked = busy || isActive(run) || run?.status === "paused";
+  const decisionProposal = run?.proposal?.kind === "decision";
+  const proposalMembers = run?.proposal?.required_approvers
+    ? members.filter((m) => run.proposal!.required_approvers!.includes(m.id))
+    : members;
+  const canApprove = proposalMembers.some((m) => m.id === state.user.id);
+  const createdCount =
+    run?.created_task_ids?.length ||
+    state.tasks.filter((t) => t.source_run === run?.id).length;
+  const canConvert =
+    run?.status === "succeeded" &&
+    run.owner_id === state.user.id &&
+    !createdCount &&
+    run.intent?.allow_actions &&
+    run.results.at(-1)?.suggested_actions.length &&
+    (!meeting || !!run.decision);
+
   return (
     <div className="workspace">
       <header className="workspace-header">
@@ -328,28 +359,32 @@ export default function Workspace({
                   <div>
                     <span className="eyebrow">YOUR VOICE MATTERS</span>
                     <h3>
-                      {meeting
+                      {decisionProposal
                         ? "讨论有了方向，决定交给你们"
                         : "确认后，让计划开始行动"}
                     </h3>
                   </div>
                 </div>
                 <p className="muted">
-                  {meeting
-                    ? "每位参与成员都需要分别确认。沉默不会视为同意。"
-                    : "这是行动草案，确认后才会创建待办。"}
-                  以下任务将交给发起人{" "}
-                  {state.members.find((m) => m.id === run.owner_id)?.name ||
-                    state.user.name}
-                  。
+                  {decisionProposal
+                    ? "每位参与成员都需要分别确认讨论结论。此次确认不会创建任何任务。"
+                    : `这是独立的任务草案，确认后创建给 ${state.members.find((m) => m.id === run.owner_id)?.name || "发起人"} 的待办。`}
                 </p>
+                {decisionProposal && (
+                  <p className="message-text">{run.proposal.summary}</p>
+                )}
+                {decisionProposal && run.proposal.actions.length > 0 && (
+                  <p className="tiny muted">
+                    潜在行动，仅供参考；需之后单独转成任务并确认。
+                  </p>
+                )}
                 <ol>
                   {run.proposal.actions.map((a, i) => (
                     <li key={i}>{a}</li>
                   ))}
                 </ol>
                 <div className="acceptance-list">
-                  {members.map((m) => (
+                  {proposalMembers.map((m) => (
                     <span
                       key={m.id}
                       className={run.approvals[m.id] ? "accepted" : ""}
@@ -363,7 +398,9 @@ export default function Workspace({
                     </span>
                   ))}
                 </div>
-                {!run.approvals[state.user.id] ? (
+                {!canApprove ? (
+                  <p className="muted">等待发起人确认自己的任务草案。</p>
+                ) : !run.approvals[state.user.id] ? (
                   <div className="button-row">
                     <button
                       className="primary"
@@ -371,7 +408,7 @@ export default function Workspace({
                       onClick={() => accept(true)}
                     >
                       <Check size={16} />
-                      {meeting ? "我同意此草案" : "确认并创建任务"}
+                      {decisionProposal ? "确认讨论结论" : "确认并创建任务"}
                     </button>
                     <button
                       className="secondary"
@@ -389,10 +426,36 @@ export default function Workspace({
                 )}
               </div>
             )}
-            {run?.status === "succeeded" && run.proposal && (
+            {run?.status === "succeeded" && createdCount > 0 && (
               <div className="success-banner">
-                <Check size={18} /> 已确认并创建 {run.proposal.actions.length}{" "}
-                项任务，可在任务清单查看。
+                <Check size={18} />
+                已确认并创建 {createdCount} 项任务，可在任务清单查看。
+              </div>
+            )}
+            {run?.status === "succeeded" && run.decision && !createdCount && (
+              <div className="success-banner">
+                <Check size={18} />
+                讨论结论已确认，尚未创建任务。
+              </div>
+            )}
+            {!!canConvert && (
+              <div className="optional-actions">
+                <h3>
+                  {meeting
+                    ? "要把潜在行动转成自己的待办吗？"
+                    : "这些建议，需要变成待办吗？"}
+                </h3>
+                <p className="muted">
+                  可选操作。点击后先预览草案，再确认创建；不会重新调用模型。
+                </p>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={proposeTasks}
+                >
+                  <FileCheck2 size={15} />
+                  整理为任务草案
+                </button>
               </div>
             )}
             {run?.status === "waiting_user" && (
@@ -445,6 +508,24 @@ export default function Workspace({
                   }
                 }}
               />
+              <div className="intent-picker">
+                <label htmlFor="message-intent">本条消息</label>
+                <select
+                  id="message-intent"
+                  aria-label="本条消息的处理方式"
+                  value={intent}
+                  disabled={blocked}
+                  onChange={(e) => setIntent(e.target.value)}
+                >
+                  <option value="auto">自动判断</option>
+                  <option value="question">只解释问题</option>
+                  <option value="support">先听我说</option>
+                  <option value="advice">给我建议</option>
+                  <option value="planning">制定计划</option>
+                  <option value="task">准备任务草案</option>
+                  {meeting && <option value="discussion">共同讨论</option>}
+                </select>
+              </div>
               <div className="composer-toolbar">
                 <div className="inline">
                   <span className="tiny muted">
@@ -534,6 +615,12 @@ export default function Workspace({
                 ))}
               </div>
               <div className="context-section">
+                {run?.intent && (
+                  <div className="current-intent">
+                    <Badge>{run.intent.label}</Badge>
+                    <p className="tiny muted">{run.intent.reason}</p>
+                  </div>
+                )}
                 <span className="eyebrow">SPACE BOUNDARIES</span>
                 <h3>安心的边界</h3>
                 <div className="boundary-row">

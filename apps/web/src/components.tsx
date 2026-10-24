@@ -191,6 +191,9 @@ export function Dialog({
 }
 
 const eventNames: Record<string, string> = {
+  "intent.resolved": "已确定本轮交互方式",
+  "decision.confirmed": "讨论结论已确认（未创建任务）",
+  "tasks.proposed": "用户主动整理任务草案",
   "run.queued": "任务进入持久队列",
   "agent.started": "角色开始工作",
   "agent.completed": "角色完成发言",

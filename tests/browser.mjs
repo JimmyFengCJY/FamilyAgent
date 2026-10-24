@@ -123,7 +123,7 @@ try {
     path: path.join(artifacts, "02-meeting.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "我同意此草案" }).click();
+  await page.getByRole("button", { name: "确认讨论结论" }).click();
   await waitText("你已确认，等待其他成员");
   step = "private-chat";
   await clickNav("伙伴聊天");
@@ -161,11 +161,63 @@ try {
   );
   await clickNav("家庭会议");
   await page.getByRole("button", { name: /秋日家庭旅行/ }).click();
-  await page.getByRole("button", { name: "我同意此草案" }).click();
-  await waitText("已确认并创建");
+  await page.getByRole("button", { name: "确认讨论结论" }).click();
+  await waitText("讨论结论已确认，尚未创建任务");
   await page.getByRole("button", { name: "空间设置", exact: true }).click();
   await page.getByRole("button", { name: "切换到 Jimmy" }).click();
   await waitText("你好，Jimmy");
+  step = "separate-task-approval";
+  await clickNav("家庭会议");
+  await page.getByRole("button", { name: /秋日家庭旅行/ }).click();
+  await page
+    .getByRole("button", { name: "整理为任务草案", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "确认并创建任务", exact: true })
+    .click();
+  await waitText("已确认并创建");
+  step = "question-and-advice";
+  await clickNav("伙伴聊天");
+  await page.getByRole("button", { name: "创建空间", exact: true }).click();
+  await page.getByLabel("空间名称").fill("解释与建议测试");
+  await page.getByLabel("议题内容").fill("什么是上下文管理？");
+  await page.getByRole("button", { name: "开始讨论", exact: true }).click();
+  await waitText("这是解释问答");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "确认并创建任务", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "整理为任务草案", exact: true })
+      .count(),
+    0,
+  );
+  await page.getByLabel("本条消息的处理方式").selectOption("advice");
+  await page.getByLabel("输入消息").fill("给我一些整理房间的建议");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await page
+    .getByRole("button", { name: "整理为任务草案", exact: true })
+    .waitFor({ timeout: 15000 });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "确认并创建任务", exact: true })
+      .count(),
+    0,
+  );
+  await page.screenshot({
+    path: path.join(artifacts, "09-advice-optional.png"),
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "整理为任务草案", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "确认并创建任务", exact: true })
+    .click();
+  await waitText("已确认并创建");
   step = "tasks";
   await clickNav("任务清单");
   await waitText("和家人确认可出行日期与人数");
@@ -190,7 +242,7 @@ try {
   await clickNav("个人规划");
   await page.getByRole("button", { name: "创建空间", exact: true }).click();
   await page.getByLabel("空间名称").fill("三个月英语计划");
-  await page.getByLabel("议题内容").fill("三个月提升英语，每天半小时。");
+  await page.getByLabel("议题内容").fill("帮我制定三个月英语学习计划，每天半小时。");
   await page.getByRole("button", { name: "开始讨论", exact: true }).click();
   await page
     .getByRole("button", { name: "确认并创建任务", exact: true })
@@ -267,6 +319,11 @@ try {
   await page.getByRole("button", { name: "打开导航" }).click();
   await clickNav("家庭会议");
   await page.getByRole("button", { name: /秋日家庭旅行/ }).click();
+  await page
+    .getByRole("button", { name: "查看协作与运行", exact: true })
+    .click();
+  await page.getByLabel("模型调用上限").waitFor();
+  await page.getByRole("button", { name: "关闭协作面板", exact: true }).click();
   await page.screenshot({
     path: path.join(artifacts, "08-mobile-meeting.png"),
     fullPage: true,

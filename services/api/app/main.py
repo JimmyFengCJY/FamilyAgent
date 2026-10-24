@@ -15,12 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .auth import current_user, hash_password, logout, new_session, verify_password
 from .db import Store, can_access, dump, now, uid
-from .harness import ACTIVE, Harness, create_run, propose_hash
+from .harness import ACTIVE, Harness, create_run, propose_hash, set_proposal
 from .schemas import (Acceptance, CharacterInput, ConversationInput, FinanceInput,
                       Login, MemoryInput, MessageInput, Register, ResumeInput,
                       TaskInput, TaskUpdate)
 from .seed import seed
 from .tools import calculate_budget
+from .config import runtime_revision
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +42,7 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
 
     app = FastAPI(title="FamilyAgent", version="0.1.0", lifespan=lifespan)
     app.state.store, app.state.harness, app.state.demo_login = store, harness, demo
+    app.state.runtime_revision = runtime_revision(ROOT)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
     attempts = defaultdict(list)
 
@@ -83,7 +85,9 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "service": "familyagent", "provider": harness.gateway.provider, "demo_login": demo}
+        return {"ok": True, "service": "familyagent", "provider": harness.gateway.provider, "demo_login": demo,
+                "model_config": harness.gateway.config_snapshot() if hasattr(harness.gateway, "config_snapshot") else None,
+                "runtime_revision": app.state.runtime_revision, "interaction_policy": "intent-v1"}
 
     @app.post("/api/auth/demo")
     def demo_login(request: Request, response: Response, account: str = "demo-jimmy"):
@@ -186,7 +190,7 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             raise HTTPException(422, "只能邀请本家庭成员")
         obj = {"id": uid("conv_"), "owner_id": user["id"], "household": user["household"], "scope": "family" if data.mode == "meeting" else "private", "participants": participants,
                "mode": data.mode, "title": data.title.strip(), "character_ids": ids, "character_snapshots": chars,
-               "use_memory": data.use_memory and data.mode not in {"support", "meeting"}, "status": "draft", "created_at": now(), "updated_at": now()}
+               "use_memory": data.use_memory and data.mode not in {"support", "meeting"}, "orchestration": data.orchestration, "status": "draft", "created_at": now(), "updated_at": now()}
         with store.tx() as conn:
             store.put("conversation", obj, conn)
         return obj
@@ -210,7 +214,7 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             if conv["mode"] == "support" and any(c["capability"] != "support" for c in conv["character_snapshots"]):
                 raise HTTPException(422, "情绪支持场景请选择支持伙伴，避免角色偏离")
             try:
-                run = create_run(store, conv, user, data, conn)
+                run = create_run(store, conv, user, data, conn, harness.gateway)
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
         return run
@@ -288,6 +292,10 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             run = run_for(key, user, conn)
             if run["status"] != "waiting_approval":
                 raise HTTPException(409, "草案已处理或不再有效")
+            if run["proposal"].get("kind") not in {"decision", "tasks"}:
+                raise HTTPException(409, "这是旧版草案，请发送新消息重新生成后确认")
+            if user["id"] not in run["proposal"]["required_approvers"]:
+                raise HTTPException(403, "此任务草案仅由任务接收人确认")
             if data.version != run["version"] or propose_hash(run) != run["proposal"]["hash"]:
                 raise HTTPException(409, "草案版本已变更，请刷新后确认")
             if run["proposal"]["expires_at"] < time.time():
@@ -296,22 +304,54 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             store.event(key, "decision.accepted" if data.accepted else "decision.declined", {"by": user["name"], "version": data.version}, conn)
             if not data.accepted:
                 run["status"] = "waiting_user"
-            elif all(run["approvals"].get(p) is True for p in run["participants"]):
-                # Only the initiating user's tasks are created; the preview states this explicitly.
-                for index, title in enumerate(run["proposal"]["actions"]):
-                    task = {"id": f"task_{key}_{index}", "owner_id": run["owner_id"], "title": title[:150], "status": "todo", "due_at": None, "source_run": key, "created_at": now(), "notified": False}
-                    store.put("task", task, conn)
-                if run["mode"] == "planning":
-                    plan = {"id": "plan_" + key, "owner_id": run["owner_id"], "title": run["prompt"][:100], "source_run": key,
-                            "conversation_id": run["conversation_id"], "milestones": run["results"][-1].get("proposals", []), "version": 1, "created_at": now()}
-                    store.put("plan", plan, conn)
+            elif all(run["approvals"].get(p) is True for p in run["proposal"]["required_approvers"]):
+                if run["proposal"]["kind"] == "decision":
+                    run["decision"] = {**run["proposal"], "approvals": dict(run["approvals"]), "confirmed_at": now()}
+                    store.event(key, "decision.confirmed", {"note": "只确认讨论结论，尚未创建任务"}, conn)
+                else:
+                    task_ids = []
+                    for index, title in enumerate(run["proposal"]["actions"]):
+                        task = {"id": f"task_{key}_{index}", "owner_id": run["owner_id"], "title": title, "status": "todo", "due_at": None, "source_run": key, "created_at": now(), "notified": False}
+                        store.put("task", task, conn)
+                        task_ids.append(task["id"])
+                    run["created_task_ids"] = task_ids
+                    if run["mode"] == "planning" or run.get("intent", {}).get("name") == "planning":
+                        plan = {"id": "plan_" + key, "owner_id": run["owner_id"], "title": run["prompt"][:100], "source_run": key,
+                                "conversation_id": run["conversation_id"], "milestones": run["results"][-1].get("proposals", []), "version": 1, "created_at": now()}
+                        store.put("plan", plan, conn)
+                    store.event(key, "tool.completed", {"name": "task.create_batch", "count": len(task_ids), "idempotency_key": key}, conn)
                 run["status"] = "succeeded"
-                store.event(key, "tool.completed", {"name": "task.create_batch", "count": len(run["proposal"]["actions"]), "idempotency_key": key}, conn)
                 conv = store.get(run["conversation_id"], conn)
-                conv["status"] = "concluded" if conv["mode"] == "meeting" else "active"
+                conv["status"] = "concluded" if run.get("decision") else "active"
                 store.put("conversation", conv, conn)
-                store.event(key, "run.completed", {"reason": "所有参与成员已确认"}, conn)
+                store.event(key, "run.completed", {"kind": run["proposal"]["kind"], "reason": "所需成员已确认"}, conn)
             store.put("run", run, conn)
+        return run
+
+    @app.post("/api/runs/{key}/tasks/proposal")
+    def convert_to_tasks(key: str, user=Depends(current_user)):
+        with store.tx() as conn:
+            run = run_for(key, user, conn)
+            if run["owner_id"] != user["id"]:
+                raise HTTPException(403, "只有发起人可以为自己整理任务草案")
+            siblings = [r for r in store.all("run", conn) if r["conversation_id"] == run["conversation_id"]]
+            if not siblings or siblings[-1]["id"] != key:
+                raise HTTPException(409, "已有后续讨论，请使用最新回复")
+            if run["status"] == "waiting_approval" and run.get("proposal", {}).get("kind") == "tasks":
+                return run
+            if run["status"] != "succeeded" or run.get("created_task_ids"):
+                raise HTTPException(409, "本次运行尚未结束或已经创建任务")
+            if run["mode"] == "meeting" and not run.get("decision"):
+                raise HTTPException(409, "请先由参与成员确认讨论结论")
+            if not run.get("intent", {}).get("allow_actions"):
+                raise HTTPException(409, "本次是问答、倾听或明确不创建任务；如需任务请发送新的明确请求")
+            actions = run["results"][-1].get("suggested_actions", []) if run["results"] else []
+            if not actions:
+                raise HTTPException(409, "这条回复没有可转换的行动项")
+            run["version"] += 1
+            set_proposal(run, "tasks", run["results"][-1]["summary"], actions)
+            store.put("run", run, conn)
+            store.event(key, "tasks.proposed", {"version": run["version"], "owner": user["name"], "count": len(actions)}, conn)
         return run
 
     @app.post("/api/tasks", status_code=201)

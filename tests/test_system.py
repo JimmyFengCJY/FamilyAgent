@@ -53,6 +53,12 @@ def test_meeting_requires_every_real_member_and_is_idempotent(setup):
     assert jimmy.post(url, json={"version": 1}).json()["status"] == "waiting_approval"
     assert not jimmy.get("/api/state").json()["tasks"]
     assert lin.post(url, json={"version": 1}).json()["status"] == "succeeded"
+    assert not jimmy.get("/api/state").json()["tasks"]
+    task_proposal = jimmy.post(f"/api/runs/{run['id']}/tasks/proposal").json()
+    assert task_proposal["proposal"]["kind"] == "tasks"
+    assert lin.post(url, json={"version": task_proposal["version"]}).status_code == 403
+    assert jimmy.post(url, json={"version": 1}).status_code == 409
+    assert jimmy.post(url, json={"version": task_proposal["version"]}).json()["status"] == "succeeded"
     count = len(jimmy.get("/api/state").json()["tasks"])
     assert count == len(run["proposal"]["actions"])
     assert lin.post(url, json={"version": 1}).status_code == 409
@@ -310,3 +316,37 @@ def test_confirmed_plan_is_persistent_and_personal(setup):
     assert len(plans) == 1 and plans[0]["milestones"]
     assert plans[0]["source_run"] == run["id"]
     assert not lin.get("/api/state").json()["plans"]
+
+
+def test_single_meeting_baseline_uses_one_step_with_same_roster(setup):
+    _, harness, client, _, _ = setup
+    conv = conversation(client, "meeting", orchestration="single")
+    run = drain(harness, client, send(client, conv))
+    assert len(run["steps"]) == run["calls"] == 1
+    assert run["status"] == "waiting_approval"
+    assert len(conv["character_snapshots"]) == 3
+    assert run["model_config"]["provider"] == "demo"
+
+
+def test_invalid_output_usage_is_not_lost_during_retry(setup):
+    _, harness, client, _, _ = setup
+    original = harness.gateway.generate
+    seen = []
+    def invalid_once(context):
+        seen.append(1)
+        if len(seen) == 1:
+            raise InvalidModelOutput("invalid", {"input_tokens": 4, "output_tokens": 17})
+        return original(context)
+    harness.gateway.generate = invalid_once
+    run = drain(harness, client, send(client, conversation(client)))
+    assert run["calls"] == 2
+    assert run["usage"] == {"input_tokens": 4, "output_tokens": 17}
+
+
+def test_changed_model_config_cannot_silently_change_running_experiment(setup):
+    _, harness, client, _, _ = setup
+    run = send(client, conversation(client))
+    harness.gateway.max_output_tokens += 1
+    result = drain(harness, client, run)
+    assert result["status"] == "failed"
+    assert "配置" in result["error"]

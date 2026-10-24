@@ -14,3 +14,4 @@ __pycache__/
 *.key
 *.pyc
 test-results/
+evals/results/
