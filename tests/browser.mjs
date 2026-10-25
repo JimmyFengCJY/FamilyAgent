@@ -53,6 +53,7 @@ server.stderr.on("data", (data) => {
   serverLog += data;
 });
 let browser;
+let context;
 const errors = [];
 let step = "startup";
 try {
@@ -70,8 +71,11 @@ try {
   const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   const executablePath = process.env.CHROME_PATH || (!process.env.CI && existsSync(macChrome) ? macChrome : undefined);
   browser = await chromium.launch({ ...(executablePath ? { executablePath } : {}), headless: true });
-  const context = await browser.newContext({
+  context = await browser.newContext({
     viewport: { width: 1440, height: 1050 },
+    ...(process.env.FAMILYAGENT_RECORD_VIDEO === "1" ? {
+      recordVideo: { dir: path.join(artifacts, "demo-video"), size: { width: 1440, height: 1050 } },
+    } : {}),
     locale: "zh-CN",
     timezoneId: "Asia/Hong_Kong",
   });
@@ -420,6 +424,7 @@ with sqlite3.connect(sys.argv[1]) as conn:
   }
   process.exitCode = 1;
 } finally {
+  if (context) await context.close();
   if (browser) await browser.close();
   if (server.exitCode === null && !spawnError) {
     const exited = once(server, "exit");

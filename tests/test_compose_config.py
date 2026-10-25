@@ -38,6 +38,7 @@ def test_default_compose_ignores_host_model_and_user_database(project):
         assert service['environment']['FAMILYAGENT_DB'] == '/data/familyagent.sqlite3'
         assert 'FAMILYAGENT_MODEL' not in service['environment']
         assert all(v['type'] == 'volume' for v in service['volumes'])
+        assert service['tmpfs'] == ['/tmp:mode=1777,size=64m']
     assert result['services']['api']['ports'][0]['host_ip'] == '127.0.0.1'
     assert result['services']['worker']['depends_on']['api']['condition'] == 'service_healthy'
 

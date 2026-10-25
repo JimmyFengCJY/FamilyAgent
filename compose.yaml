@@ -6,7 +6,8 @@ x-runtime: &runtime
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  tmpfs: [/tmp:mode=1777,size=64m]
+  tmpfs:
+    - '/tmp:mode=1777,size=64m'
   stop_grace_period: 75s
   volumes:
     - familyagent-data:/data
