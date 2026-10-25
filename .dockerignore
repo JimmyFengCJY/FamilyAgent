@@ -1,0 +1,33 @@
+# Allowlist: never send local secrets, databases, notebook or experiments.
+**
+!Dockerfile
+!.dockerignore
+!requirements.lock
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!apps/
+!apps/web/
+!apps/web/src/
+!apps/web/src/**
+!public/
+!public/**
+!services/
+!services/__init__.py
+!services/api/
+!services/api/__init__.py
+!services/api/app/
+!services/api/app/*.py
+!services/mcp_reference/
+!services/mcp_reference/*.py
+# Exclusions remain effective even inside allowed source directories.
+**/.env
+**/.env.*
+**/*.ipynb
+**/*.sqlite*
+**/*.db
+**/*.key
+**/*.pem
+**/__pycache__/**

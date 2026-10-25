@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
+import MemorySources from "./MemorySources";
 import {
   Avatar,
   Badge,
@@ -28,7 +29,7 @@ import {
   timeText,
   Trace,
 } from "./components";
-import type { Budget, Detail, Run, State } from "./types";
+import type { Budget, Detail, MessagePage, Run, State } from "./types";
 
 export default function Workspace({
   id,
@@ -51,42 +52,83 @@ export default function Workspace({
   const [showBudget, setShowBudget] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [tab, setTab] = useState("overview");
+  const [mcpQuery, setMcpQuery] = useState("目标拆解");
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpResult, setMcpResult] = useState<{ protocol: string; server: string; transport: string; hits: { id: string; title: string; excerpt: string; source: string }[] } | null>(null);
   const [mobileContext, setMobileContext] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const run = detail?.runs.at(-1);
   const conv = detail?.conversation;
+  const session = useRef({ id, generation: 0, latest: null as string | null, loading: false });
+  const [olderPage, setOlderPage] = useState<MessagePage["page"] | null>(null);
+  const [olderBusy, setOlderBusy] = useState(false);
+  const prepending = useRef(false);
   async function load() {
+    const token = session.current;
+    if (token.id !== id || token.loading) return;
+    token.loading = true;
     try {
-      setDetail(await api<Detail>(`/conversations/${id}`));
+      const after = token.latest;
+      const d = await api<Detail>(`/conversations/${id}?compact=true${after ? `&after=${encodeURIComponent(after)}` : ""}`);
+      if (session.current !== token) return;
+      token.latest = d.page?.newest || token.latest;
+      if (!after) setOlderPage(d.page || null);
+      setDetail((previous) => {
+        if (!previous || !after) return d;
+        const seen = new Set(previous.messages.map(m => m.id));
+        return { ...d, messages: [...previous.messages, ...d.messages.filter(m => !seen.has(m.id))] };
+      });
       setLoadError("");
     } catch (e) {
-      setLoadError((e as Error).message);
+      if (session.current === token) setLoadError((e as Error).message);
+    } finally {
+      token.loading = false;
+    }
+  }
+  async function loadOlder() {
+    if (!olderPage?.has_more || !olderPage.oldest || olderBusy) return;
+    const token = session.current;
+    const container = document.querySelector(".conversation-messages");
+    const height = container?.scrollHeight;
+    const scrollTop = container?.scrollTop;
+    setOlderBusy(true);
+    try {
+      const result = await api<MessagePage>(`/conversations/${id}/messages?before=${encodeURIComponent(olderPage.oldest)}`);
+      if (session.current !== token) return;
+      prepending.current = true;
+      setDetail(previous => {
+        if (!previous) return previous;
+        const seen = new Set(previous.messages.map(m => m.id));
+        return { ...previous, messages: [...result.messages.filter(m => !seen.has(m.id)), ...previous.messages] };
+      });
+      setOlderPage(result.page);
+      requestAnimationFrame(() => {
+        if (session.current === token && container && height !== undefined && scrollTop !== undefined) {
+          container.scrollTop = scrollTop + container.scrollHeight - height;
+        }
+      });
+    } catch (e) {
+      if (session.current === token) notify((e as Error).message);
+    } finally {
+      if (session.current === token) setOlderBusy(false);
     }
   }
   useEffect(() => {
-    let disposed = false;
-    const fetchDetail = async () => {
-      try {
-        const d = await api<Detail>(`/conversations/${id}`);
-        if (!disposed) {
-          setDetail(d);
-          setLoadError("");
-        }
-      } catch (e) {
-        if (!disposed) setLoadError((e as Error).message);
-      }
-    };
+    session.current = { id, generation: session.current.generation + 1, latest: null, loading: false };
     setDetail(null);
+    setOlderPage(null);
+    setOlderBusy(false);
     setText("");
     setIntent("auto");
-    void fetchDetail();
-    const timer = setInterval(fetchDetail, 1200);
+    void load();
+    const timer = setInterval(() => void load(), 1200);
     return () => {
-      disposed = true;
+      session.current = { id: "", generation: session.current.generation + 1, latest: null, loading: false };
       clearInterval(timer);
     };
   }, [id]);
   useEffect(() => {
+    if (prepending.current) { prepending.current = false; return; }
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [detail?.messages.length]);
   async function send(content = text, finance?: Budget) {
@@ -275,6 +317,14 @@ export default function Workspace({
                 )}
               </div>
             )}
+            {!!conv?.constraints?.length && <div className="message-notes">
+              <strong>本次空间的持续约束</strong>
+              {conv.constraints.map((constraint, i) => <p key={i}>{constraint}</p>)}
+              <p>每轮保留在输入中；AI 是否遵守仍需核对。</p>
+            </div>}
+            {olderPage?.has_more && <button className="text-button" onClick={() => void loadOlder()} disabled={olderBusy}>
+              {olderBusy ? "正在加载…" : "加载更早的消息"}
+            </button>}
             {detail.messages.map((message) => (
               <article
                 className={`message ${message.actor_type === "human" ? "human" : ""}`}
@@ -303,6 +353,29 @@ export default function Workspace({
                     <time>{timeText(message.created_at)}</time>
                   </div>
                   <p className="message-text">{message.content}</p>
+                  {!!message.memory_sources?.length && <MemorySources conversationId={id} message={message} />}
+                  {message.stage === "expert" && detail.conversation.orchestration === "independent" && <Badge>独立首轮观点</Badge>}
+                  {!!message.result?.consensus?.length && (
+                    <div className="message-notes">
+                      <strong>AI 共同建议 · 尚待成员确认</strong>
+                      {message.result.consensus.map((text, i) => <p key={i}>{text}</p>)}
+                    </div>
+                  )}
+                  {!!message.result?.disagreements?.length && (
+                    <div className="message-notes">
+                      <strong>分歧与待澄清取舍 · AI 整理</strong>
+                      <p>引用已核对本轮专家原文；是否构成分歧仍需判断。</p>
+                      {message.result.disagreements.map((item, i) => (
+                        <div key={i}>
+                          <strong>{item.topic}</strong>
+                          {item.positions.map((position, j) => <p key={j}>
+                            {message.result?.expert_sources?.find((source) => source.source_id === position.source_id)?.actor_name || position.source_id}：{position.quote}
+                          </p>)}
+                          <p>请澄清：{item.question}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {message.result?.proposals &&
                     message.result.proposals.length > 0 && (
                       <ul className="proposal-list">
@@ -340,8 +413,7 @@ export default function Workspace({
                 <span />
                 <span />
                 <p>
-                  {run?.steps[run.cursor]?.character.name || "伙伴"}{" "}
-                  正在整理想法
+                  {run?.pending_tool ? `正在执行 ${run.pending_tool.name}，可暂停或停止` : `${run?.steps[run.cursor]?.character.name || "伙伴"} 正在整理想法`}
                 </p>
               </div>
             )}
@@ -635,10 +707,39 @@ export default function Workspace({
                   <ShieldCheck size={16} />
                   <p>
                     {conv.use_memory
-                      ? "已开启个人记忆，只读取你主动保存的内容。"
+                      ? "已开启个人记忆，按本轮问题匹配相关记录；无匹配则不注入。"
                       : "本会话不读取长期记忆。"}
                   </p>
                 </div>
+              </div>
+              {!!state.tool_catalog?.length && <div className="context-section">
+                <h3>工具权限</h3>
+                <p className="tiny muted">目录仅说明能力，执行仍由服务端检查。</p>
+                {state.tool_catalog.map((tool) => <div key={tool.name} className="message-notes">
+                  <strong>{tool.name}</strong>
+                  <p>{tool.description}</p>
+                  <Badge>{tool.requires_approval ? "仅用户确认后执行" : run?.available_tools?.includes(tool.name) ? "本次角色可请求" : "按角色与空间授权"}</Badge>
+                </div>)}
+              </div>}
+              <div className="context-section">
+                <h3>MCP 本地参考库</h3>
+                <p className="tiny muted">仅检索内置参考资料，不读取个人数据库、不调用模型。</p>
+                <label>检索词<input aria-label="MCP 检索词" value={mcpQuery} maxLength={120}
+                  onChange={(e) => { setMcpQuery(e.target.value); setMcpResult(null); }} /></label>
+                <button className="secondary" disabled={mcpBusy || mcpQuery.trim().length < 2}
+                  onClick={async () => {
+                    setMcpBusy(true); setMcpResult(null);
+                    try { setMcpResult(await api("/mcp/reference/probe", "POST", { query: mcpQuery, limit: 3 })); }
+                    catch (e) { notify((e as Error).message); }
+                    finally { setMcpBusy(false); }
+                  }}>{mcpBusy ? "正在检索…" : "检索本地 MCP 参考库"}</button>
+                {mcpResult && <div className="message-notes">
+                  <p>MCP 连接与检索成功 · {mcpResult.transport} · {mcpResult.protocol}</p>
+                  {!mcpResult.hits.length && <p>没有匹配资料。</p>}
+                  {mcpResult.hits.map((hit) => <div key={hit.id}>
+                    <strong>{hit.title}</strong><p>{hit.excerpt}</p><small>来源：{hit.source}</small>
+                  </div>)}
+                </div>}
               </div>
               {run && (
                 <div className="context-section">

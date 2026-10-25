@@ -34,6 +34,9 @@ export interface Result {
   missing_information: string[];
   risks: string[];
   suggested_actions: string[];
+  consensus?: string[];
+  disagreements?: { topic: string; positions: { source_id: string; quote: string }[]; question: string }[];
+  expert_sources?: { source_id: string; actor_id: string; actor_name: string }[];
 }
 export interface Conversation {
   id: string;
@@ -44,11 +47,14 @@ export interface Conversation {
   character_ids: string[];
   character_snapshots: Character[];
   use_memory: boolean;
+  orchestration?: "single" | "multi" | "independent";
+  constraints?: string[];
   status: string;
   updated_at: string;
   owner_id: string;
 }
 export interface Message {
+  memory_sources?: { id: string; score: number; status: "available" | "changed" | "unavailable"; content?: string; source?: string; created_at?: string }[];
   id: string;
   actor_type: string;
   actor_name: string;
@@ -61,6 +67,8 @@ export interface Message {
   result?: Result;
 }
 export interface Run {
+  pending_tool?: { id: string; name: string; state: string };
+  available_tools?: string[];
   id: string;
   owner_id: string;
   conversation_id: string;
@@ -125,12 +133,18 @@ export interface Notification {
   read: boolean;
   created_at: string;
 }
+export type RunSummary = Pick<Run, "id" | "owner_id" | "conversation_id" | "mode" | "status" | "cursor" | "calls" | "max_calls" | "created_at" | "provider" | "version" | "usage" | "participants" | "approvals">;
+export interface MessagePage {
+  messages: Message[];
+  page: { has_more: boolean; direction: "before" | "after"; oldest: string | null; newest: string | null };
+}
 export interface State {
+  tool_catalog?: { name: string; description: string; risk: string; requires_approval: boolean }[];
   user: User;
   members: User[];
   characters: Character[];
   conversations: Conversation[];
-  runs: Run[];
+  runs: RunSummary[];
   tasks: Task[];
   plans: Plan[];
   memories: Memory[];
@@ -139,6 +153,7 @@ export interface State {
   demo_login: boolean;
 }
 export interface Detail {
+  page?: MessagePage["page"];
   conversation: Conversation;
   messages: Message[];
   runs: Run[];

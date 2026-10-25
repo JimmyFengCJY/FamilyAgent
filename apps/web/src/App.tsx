@@ -105,11 +105,29 @@ export default function App() {
   const [taskFilter, setTaskFilter] = useState("todo");
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [invite, setInvite] = useState("");
+  const [runDetail, setRunDetail] = useState<Run | null>(null);
+  const detailRunId = selectedRun || state?.runs.at(-1)?.id;
+  useEffect(() => {
+    setRunDetail(null);
+    if (view !== "runs" || !detailRunId) return;
+    let disposed = false;
+    const load = async () => {
+      try {
+        const result = await api<Run>(`/runs/${detailRunId}`);
+        if (!disposed) setRunDetail(result);
+      } catch (e) {
+        if (!disposed) setToast((e as Error).message);
+      }
+    };
+    void load();
+    const timer = setInterval(load, 2500);
+    return () => { disposed = true; clearInterval(timer); };
+  }, [view, detailRunId]);
   const notify = useCallback((message: string) => setToast(message), []);
   const close = useCallback(() => setDialog(null), []);
   const refresh = useCallback(async () => {
     try {
-      setState(await api<State>("/state"));
+      setState(await api<State>("/state?compact=true"));
     } catch (e) {
       if ((e as Error).message === "请先登录") setState(null);
       else throw e;
@@ -278,8 +296,7 @@ export default function App() {
           ? "finance"
           : "assistant";
   const recentRuns = [...state.runs].reverse();
-  const traceRun =
-    state.runs.find((r) => r.id === selectedRun) || recentRuns[0];
+  const traceRun = runDetail?.id === detailRunId ? runDetail : null;
   return (
     <div className="app-shell">
       {mobileNav && (

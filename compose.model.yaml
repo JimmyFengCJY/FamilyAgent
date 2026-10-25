@@ -1,0 +1,15 @@
+# Explicit opt-in only. Requires Compose 2.30+ (!override + raw env_file).
+x-model: &model
+  env_file:
+    - path: ./deploy/model.env
+      format: raw
+  environment: !override
+    FAMILYAGENT_DEMO_LOGIN: '0'
+    FAMILYAGENT_EMBEDDED_WORKER: '0'
+    FAMILYAGENT_DB: /data/familyagent.sqlite3
+
+services:
+  api:
+    <<: *model
+  worker:
+    <<: *model

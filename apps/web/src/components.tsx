@@ -49,7 +49,7 @@ export const statusNames: Record<string, string> = {
   proposal_pending: "待确认",
   concluded: "已达成决议",
 };
-export const isActive = (run?: Run) =>
+export const isActive = (run?: Pick<Run, "status">) =>
   !!run && ["queued", "running"].includes(run.status);
 export const timeText = (date: string) =>
   new Date(date).toLocaleString("zh-CN", {
@@ -191,6 +191,11 @@ export function Dialog({
 }
 
 const eventNames: Record<string, string> = {
+  "tool.queued": "工具检查点已保存",
+  "attempt.discarded": "旧执行结果已丢弃",
+  "memory.retrieved": "个人记忆检索完成",
+  "context.prepared": "上下文预算检查完成",
+  "context.rejected": "关键上下文超出预算，未调用模型",
   "intent.resolved": "已确定本轮交互方式",
   "decision.confirmed": "讨论结论已确认（未创建任务）",
   "tasks.proposed": "用户主动整理任务草案",
@@ -204,12 +209,14 @@ const eventNames: Record<string, string> = {
   "tool.started": "工具开始执行",
   "tool.completed": "工具执行完成",
   "tool.denied": "工具权限检查拒绝",
+  "tool.failed": "工具执行失败",
   "run.exhausted": "调用预算已耗尽",
   "run.failed": "运行失败",
   "run.pause": "用户暂停",
   "run.resume": "从检查点继续",
   "run.cancel": "用户停止",
   "run.cancelled": "草案已被替代",
+  "lease.renewed": "执行租约已续期",
   "run.recovered": "恢复中断的运行",
   "decision.accepted": "成员确认草案",
   "decision.declined": "成员提出修改",
@@ -267,6 +274,8 @@ export function Trace({
                 e.data.stage === "summary" ? "汇总阶段" : "",
                 e.data.step ? `步骤 ${e.data.step}/${e.data.total}` : "",
                 e.data.reason,
+                e.type === "memory.retrieved" ? `匹配 ${e.data.selected} 条 · 输入 ${e.data.sent} 条 · 预算移除 ${e.data.dropped_by_budget} 条` : "",
+                e.type === "context.prepared" ? `输入 ${e.data.input_chars}/${e.data.max_input_chars} 字符 · Token 粗估 ${e.data.estimated_tokens}（非实测） · 裁剪 ${JSON.stringify(e.data.dropped)}` : "",
               ]
                 .filter(Boolean)
                 .map(String)

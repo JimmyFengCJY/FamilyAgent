@@ -38,3 +38,13 @@ def test_runtime_revision_detects_code_and_web_build_changes(tmp_path):
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist/index.html").write_text("new app assets")
     assert runtime_revision(tmp_path) != changed
+
+
+def test_runtime_fingerprint_includes_bundled_mcp_server(tmp_path):
+    from services.api.app.config import runtime_revision
+    server = tmp_path / 'services/mcp_reference/server.py'
+    server.parent.mkdir(parents=True)
+    server.write_text('version=1')
+    before = runtime_revision(tmp_path)
+    server.write_text('version=2')
+    assert runtime_revision(tmp_path) != before

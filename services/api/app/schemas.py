@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field, field_validator
 
 
@@ -30,7 +30,8 @@ class ConversationInput(BaseModel):
     character_ids: list[str] = Field(default_factory=list, max_length=3)
     participants: list[str] = Field(default_factory=list, max_length=12)
     use_memory: bool = False
-    orchestration: Literal["single", "multi"] = "multi"
+    orchestration: Literal["single", "multi", "independent"] = "independent"
+    constraints: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=8)
 
 
 class BudgetItem(BaseModel):
@@ -80,10 +81,29 @@ class ResumeInput(BaseModel):
     max_calls: int | None = Field(default=None, ge=1, le=12)
 
 
+class ToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+    arguments: dict = Field(default_factory=dict)
+
+
+class Position(BaseModel):
+    source_id: str = Field(min_length=1, max_length=100)
+    quote: str = Field(min_length=1, max_length=1000)
+
+
+class Disagreement(BaseModel):
+    topic: str = Field(min_length=1, max_length=300)
+    positions: list[Position] = Field(min_length=2, max_length=3)
+    question: str = Field(min_length=1, max_length=500)
+
+
 class AgentResult(BaseModel):
     summary: str = Field(min_length=1, max_length=6000)
     proposals: list[str] = Field(default_factory=list, max_length=8)
     assumptions: list[str] = Field(default_factory=list, max_length=6)
     missing_information: list[str] = Field(default_factory=list, max_length=6)
     risks: list[str] = Field(default_factory=list, max_length=6)
-    suggested_actions: list[str] = Field(default_factory=list, max_length=6)
+    suggested_actions: list[Annotated[str, Field(min_length=1, max_length=150)]] = Field(default_factory=list, max_length=6)
+    consensus: list[str] = Field(default_factory=list, max_length=6)
+    disagreements: list[Disagreement] = Field(default_factory=list, max_length=6)

@@ -96,7 +96,7 @@ def test_errors_do_not_expose_provider_response_or_key(monkeypatch, status, exce
     assert "synthetic-key" not in str(exc.value)
 
 
-@pytest.mark.parametrize("value", ["[]", '{"tool_request":null}', '{"tool_request":{"name":7}}', '{"tool_request":{"name":"task.list","arguments":{"secret":"x"}}}'])
+@pytest.mark.parametrize("value", ["[]", '{"tool_request":null}', '{"tool_request":{"name":7}}', '{"tool_request":{"name":"task.list","arguments":[]}}', '{"tool_request":{"name":"task.list","approved":true}}'])
 def test_invalid_tool_envelopes_rejected(monkeypatch, value):
     gateway, _ = mock(monkeypatch, "deepseek", {"choices": [{"message": {"content": value}}]})
     with pytest.raises(InvalidModelOutput):
@@ -164,3 +164,10 @@ def test_read_timeout_has_specific_safe_hint(monkeypatch):
     assert "超时" in str(exc.value)
     assert "FAMILYAGENT_MODEL_TIMEOUT" in str(exc.value)
     assert "sensitive" not in str(exc.value)
+
+
+def test_tool_arguments_envelope_is_normalized(monkeypatch):
+    value = {'tool_request': {'name': 'task.list', 'arguments': {'status': 'todo', 'limit': 1}}}
+    gateway, _ = mock(monkeypatch, 'deepseek', {'choices': [{'message': {'content': json.dumps(value)}}]})
+    result, _ = gateway.generate({})
+    assert result == value

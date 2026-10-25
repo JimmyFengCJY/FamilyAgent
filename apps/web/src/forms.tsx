@@ -27,6 +27,8 @@ export function ConversationForm({
     state.members.map((m) => m.id),
   );
   const [memory, setMemory] = useState(false);
+  const [constraints, setConstraints] = useState("");
+  const [orchestration, setOrchestration] = useState("independent");
   const [busy, setBusy] = useState(false);
   const chars = state.characters.filter((c) =>
     mode === "meeting"
@@ -50,6 +52,8 @@ export function ConversationForm({
               character_ids: ids,
               participants: mode === "meeting" ? participants : [],
               use_memory: memory,
+              constraints: constraints.split("\n").map((line) => line.trim()).filter(Boolean),
+              orchestration,
             },
             prompt,
           );
@@ -125,6 +129,14 @@ export function ConversationForm({
       </div>
       {mode === "meeting" ? (
         <>
+          <label>
+            讨论方式
+            <select aria-label="讨论方式" value={orchestration} onChange={(e) => setOrchestration(e.target.value)}>
+              <option value="independent">独立首轮分析，再汇总分歧</option>
+              <option value="multi">顺序讨论（专家参考前序观点）</option>
+              <option value="single">单助手综合分析</option>
+            </select>
+          </label>
           <label>参与的家庭成员</label>
           <div className="member-picker">
             {state.members.map((m) => (
@@ -159,6 +171,12 @@ export function ConversationForm({
           </label>
         )
       )}
+      <label>
+        持续约束 <span className="muted">可选，每行一条，最多 8 条，每条 200 字</span>
+        <textarea aria-label="持续约束" rows={2} maxLength={1607}
+          placeholder="例如：总预算不超过 8000 元；请每条单独一行"
+          value={constraints} onChange={(e) => setConstraints(e.target.value)} />
+      </label>
       <label>
         想先说的话 <span className="muted">可稍后填写</span>
         <textarea

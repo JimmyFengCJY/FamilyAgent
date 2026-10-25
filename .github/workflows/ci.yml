@@ -1,0 +1,123 @@
+name: Offline quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FAMILYAGENT_PROVIDER: demo
+  FAMILYAGENT_EMBEDDED_WORKER: '0'
+
+jobs:
+  backend-evaluation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked Python dependencies
+        run: python -m pip install --only-binary=cryptography,rpds-py -r requirements.lock
+      - name: Backend tests and dependency consistency
+        run: python scripts/check.py --stage backend
+      - name: Synthetic evaluation and memory regression
+        run: python scripts/check.py --stage eval
+      - name: Save reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-evaluation
+          path: test-results/ci/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  web-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --only-binary=cryptography,rpds-py -r requirements.lock
+          npm ci
+      - name: Typecheck and production build
+        run: python scripts/check.py --stage web
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Desktop and mobile browser regression
+        run: python scripts/check.py --stage browser
+      - name: Save screenshots and reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-browser
+          path: |
+            test-results/ci/
+            test-results/*.png
+          retention-days: 7
+          if-no-files-found: ignore
+
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      FAMILYAGENT_DOCKER_PORT: '8088'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate and build isolated demo deployment
+        run: |
+          docker compose --env-file /dev/null -p familyagent-ci config --quiet
+          docker compose --env-file /dev/null -p familyagent-ci up --build -d --wait --wait-timeout 120
+      - name: Verify web, worker and MCP, then restart and verify persistence
+        run: |
+          python scripts/container_smoke.py --base-url http://127.0.0.1:8088 --state test-results/container/state.json
+          docker compose --env-file /dev/null -p familyagent-ci restart
+          docker compose --env-file /dev/null -p familyagent-ci up -d --wait --wait-timeout 120
+          python scripts/container_smoke.py --base-url http://127.0.0.1:8088 --state test-results/container/state.json --verify
+      - name: Capture container status
+        if: always()
+        run: |
+          mkdir -p test-results/container
+          docker compose --env-file /dev/null -p familyagent-ci ps --all > test-results/container/status.txt
+          docker compose --env-file /dev/null -p familyagent-ci logs --no-color --tail 100 > test-results/container/logs.txt
+      - name: Save synthetic smoke reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-smoke
+          path: test-results/container/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Clean up this job's isolated containers and volume
+        if: always()
+        run: docker compose --env-file /dev/null -p familyagent-ci down --volumes --remove-orphans

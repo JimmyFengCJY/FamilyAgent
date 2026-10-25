@@ -22,6 +22,9 @@ def test_harness_single_vs_multi_and_human_report(tmp_path):
     assert all(r["status"] == "waiting_approval" for r in rows)
     assert all(r["quality_status"] == "unreviewed" for r in rows)
     assert "未评分" in (output / "report.md").read_text()
+    assert "未完成双侧评分" in (output / "report.md").read_text()
+    assert "各阶段结果" in (output / "review.md").read_text()
+    assert rows[0]["prompt"] in (output / "review.md").read_text()
     with (output / "scores.csv").open(encoding="utf-8-sig", newline="") as stream:
         scores = list(csv.DictReader(stream))
     scores[0].update(correctness="2", constraints="1", actionability="2", privacy="2")
@@ -32,6 +35,14 @@ def test_harness_single_vs_multi_and_human_report(tmp_path):
     report(output, review)
     assert "7.00（已评1）" in (output / "report.md").read_text()
     assert "1/2 条完整人工评分" in (output / "report.md").read_text()
+    assert "未完成双侧评分" in (output / "report.md").read_text()
+    scores[1].update(correctness="2", constraints="2", actionability="2", privacy="2")
+    with review.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=scores[0].keys())
+        writer.writeheader(); writer.writerows(scores)
+    report(output, review)
+    pair_line = next(line for line in (output / "report.md").read_text().splitlines() if line.startswith("| meeting-trip /"))
+    assert "| +4 |" in pair_line and pair_line.endswith("| 1 |")
 
 
 def test_real_evaluation_requires_explicit_live(tmp_path):
@@ -52,6 +63,7 @@ def test_low_call_budget_exposes_unfinished_multi(tmp_path):
     rows = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
     assert rows[0]["execution_completed"] is True
     assert rows[1]["status"] == "exhausted" and not rows[1]["execution_completed"]
+    assert "配对不完整或工程检查未通过" in (output / "report.md").read_text()
 
 
 def test_global_call_budget_stops_and_reports_partial_experiment(tmp_path):
@@ -68,3 +80,29 @@ def test_private_context_and_finance_use_real_harness(tmp_path):
     assert all(all(r["checks"].values()) for r in rows)
     assert rows[-1]["finance_result"]["remaining"] == "0.00"
     assert "PRIVATE_OTHER_MEMBER_EVAL_SENTINEL_7294" not in (output / "calls.jsonl").read_text()
+
+
+def test_three_strategy_comparison_includes_independent(tmp_path):
+    output = tmp_path / 'three-strategies'
+    assert main(['--case', 'meeting-trip', '--strategies', 'all', '--output', str(output)]) == 0
+    rows = [json.loads(line) for line in (output / 'results.jsonl').read_text().splitlines()]
+    assert [r['strategy'] for r in rows] == ['single', 'multi', 'independent']
+    assert [r['calls'] for r in rows] == [1, 5, 5]
+    assert json.loads((output / 'manifest.json').read_text())['planned_runs'] == 3
+    assert '独立减顺序' in (output / 'report.md').read_text()
+
+
+def test_fail_fast_preserves_first_failure_and_stops_other_cases(tmp_path, monkeypatch):
+    from services.api.app.models import ModelGateway
+    calls = []
+    def unavailable(self, context):
+        calls.append(1)
+        raise ValueError('synthetic non-retryable provider configuration failure')
+    monkeypatch.setattr(ModelGateway, 'generate', unavailable)
+    output = tmp_path / 'fail-fast'
+    assert main(['--provider', 'demo', '--case', 'meeting-trip', '--case', 'meeting-conflict',
+                 '--strategies', 'all', '--fail-fast', '--output', str(output)]) == 1
+    rows = [json.loads(line) for line in (output / 'results.jsonl').read_text().splitlines()]
+    assert len(rows) == len(calls) == 1
+    assert rows[0]['execution_completed'] is False
+    assert (output / 'report.md').exists()

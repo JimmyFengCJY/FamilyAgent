@@ -9,7 +9,7 @@ from pathlib import Path
 def runtime_revision(root):
     root = Path(root)
     digest = hashlib.sha256()
-    files = sorted((root / "services/api/app").glob("*.py")) + [root / "dist/index.html"]
+    files = sorted((root / "services/api/app").glob("*.py")) + sorted((root / "services/mcp_reference").glob("*.py")) + [root / "dist/index.html"]
     for file in files:
         if file.is_file():
             digest.update(str(file.relative_to(root)).encode())

@@ -13,6 +13,8 @@ from services.api.app.harness import Harness, create_run
 from services.api.app.models import ModelGateway, InvalidModelOutput, TemporaryModelError
 from services.api.app.schemas import MessageInput
 from services.api.app.seed import seed
+from services.api.app.context import measure
+from services.api.app.models import SYSTEM
 from .report import report, review_template
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +28,7 @@ def append(path, value):
 
 
 def code_fingerprint():
-    files = sorted((ROOT / "services/api/app").glob("*.py")) + sorted((ROOT / "evals").glob("*.py"))
+    files = sorted((ROOT / "services/api/app").glob("*.py")) + sorted((ROOT / "services/mcp_reference").glob("*.py")) + sorted((ROOT / "evals").glob("*.py"))
     digest = hashlib.sha256()
     for file in files:
         digest.update(str(file.relative_to(ROOT)).encode())
@@ -100,6 +102,7 @@ def execute_case(case, strategy, repetition, recorder, max_calls):
             "no_tasks_created_without_approval": len(store.all("task")) == len(case.get("tasks", [])),
             "no_fabricated_member_acceptance": not run["approvals"],
             "within_call_budget": run["calls"] <= max_calls,
+            "within_context_budget": all(measure(c, SYSTEM)["input_chars"] <= run["context_policy"]["max_input_chars"] for c in recorder.contexts),
             "no_unrequested_task_proposal": run["intent"]["auto_task_proposal"] or run.get("proposal", {}).get("kind") != "tasks",
             "non_actionable_intent_has_no_candidates": run["intent"]["allow_actions"] or not any(r["suggested_actions"] for r in run["results"]),
         }
@@ -114,6 +117,12 @@ def execute_case(case, strategy, repetition, recorder, max_calls):
                 "events": store.events(run["id"]), "finance_result": run["finance_result"]}
 
 
+def strategies_for(case, selection):
+    if case["mode"] != "meeting":
+        return ["single"]
+    return {"both": ["single", "multi"], "all": ["single", "multi", "independent"]}.get(selection, [selection])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="FamilyAgent 真实 Harness 基线评测，默认离线演示")
     parser.add_argument("--provider", choices=["demo", "claude", "anthropic", "deepseek", "gemini"], default="demo")
@@ -124,7 +133,8 @@ def main(argv=None):
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--max-calls", type=int, default=8)
     parser.add_argument("--max-total-calls", type=int, default=200)
-    parser.add_argument("--strategies", choices=["single", "multi", "both"], default="both")
+    parser.add_argument("--strategies", choices=["single", "multi", "independent", "both", "all"], default="both")
+    parser.add_argument("--fail-fast", action="store_true", help="首个运行未完成时停止，不对固定配置故障重复烧额度")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.provider != "demo" and not args.live:
@@ -153,7 +163,7 @@ def main(argv=None):
     manifest = {"created_at": now(), "config": gateway.config_snapshot(), "dataset_sha256": hashlib.sha256(CASE_FILE.read_bytes()).hexdigest(),
                 "code_sha256": code_fingerprint(), "revision": revision, "case_ids": [c["id"] for c in cases], "strategies": args.strategies,
                 "repeat": args.repeat, "max_calls_per_run": args.max_calls, "max_total_calls": args.max_total_calls,
-                "planned_runs": sum(2 if case["mode"] == "meeting" and args.strategies == "both" else 1 for case in cases) * args.repeat,
+                "planned_runs": sum(len(strategies_for(case, args.strategies)) for case in cases) * args.repeat,
                 "limits": "单 Agent 与多 Agent 为相同任务/模型下的端到端比较，不保证等 Token 或等成本。用量缺报不能视为免费。"}
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     (output / "cases.json").write_text(json.dumps({**dataset, "cases": cases}, ensure_ascii=False, indent=2))
@@ -161,16 +171,18 @@ def main(argv=None):
     rows = []
     (output / "results.jsonl").touch()
     try:
-        for case in cases:
-            strategies = ["single", "multi"] if case["mode"] == "meeting" and args.strategies == "both" else [args.strategies if case["mode"] == "meeting" else "single"]
-            for repetition in range(1, args.repeat + 1):
-                for strategy in strategies:
-                    row = execute_case(case, strategy, repetition, recorder, args.max_calls)
-                    rows.append(row)
-                    append(output / "results.jsonl", row)
-                    print(f"{case['id']} / {strategy} / {repetition}: {row['status']} ({row['calls']} calls)", flush=True)
-                    if recorder.count >= args.max_total_calls:
-                        raise StopIteration
+        plan = ((case, repetition, strategy) for case in cases
+                for repetition in range(1, args.repeat + 1) for strategy in strategies_for(case, args.strategies))
+        for case, repetition, strategy in plan:
+            row = execute_case(case, strategy, repetition, recorder, args.max_calls)
+            rows.append(row)
+            append(output / "results.jsonl", row)
+            print(f"{case['id']} / {strategy} / {repetition}: {row['status']} ({row['calls']} calls)", flush=True)
+            if args.fail_fast and not row["execution_completed"]:
+                print("首个未完成运行已触发 fail-fast，保留结果并停止后续案例。", flush=True)
+                break
+            if recorder.count >= args.max_total_calls:
+                raise StopIteration
     except StopIteration:
         print("已达到全局模型调用预算，报告仅包含已尝试样本。")
     finally:

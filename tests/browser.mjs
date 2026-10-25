@@ -1,17 +1,29 @@
 import { chromium } from "playwright";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 
 const root = process.cwd();
+const localPython = path.join(root, ".venv312/bin/python");
+const python = process.env.PYTHON_BIN || (existsSync(localPython) ? localPython : "python3");
+// Refuse to attach to another test/server instance on this fixed test port.
+const probe = createServer();
+await new Promise((resolve, reject) => {
+  probe.once("error", reject);
+  probe.listen(8010, "127.0.0.1", resolve);
+});
+await new Promise(resolve => probe.close(resolve));
 const temp = await mkdtemp(path.join(tmpdir(), "familyagent-browser-"));
 const artifacts = path.join(root, "test-results");
 await mkdir(artifacts, { recursive: true });
 const base = "http://127.0.0.1:8010";
 const server = spawn(
-  path.join(root, ".venv312/bin/python"),
+  python,
   [
     "-m",
     "uvicorn",
@@ -28,12 +40,15 @@ const server = spawn(
       FAMILYAGENT_DB: path.join(temp, "qa.sqlite3"),
       FAMILYAGENT_PROVIDER: "demo",
       FAMILYAGENT_DEMO_LOGIN: "1",
+      FAMILYAGENT_EMBEDDED_WORKER: "1",
       FAMILYAGENT_DEMO_DELAY: "0.25",
     },
     stdio: ["ignore", "pipe", "pipe"],
   },
 );
 let serverLog = "";
+let spawnError;
+server.on("error", error => { spawnError = error; });
 server.stderr.on("data", (data) => {
   serverLog += data;
 });
@@ -41,19 +56,20 @@ let browser;
 const errors = [];
 let step = "startup";
 try {
+  let ready = false;
   for (let i = 0; i < 60; i++) {
+    if (spawnError) throw spawnError;
+    if (server.exitCode !== null) throw new Error("Test API exited before readiness");
     try {
       const r = await fetch(`${base}/api/health`);
-      if (r.ok) break;
+      if (r.ok && (await r.json()).provider === "demo") { ready = true; break; }
     } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }
-  browser = await chromium.launch({
-    executablePath:
-      process.env.CHROME_PATH ||
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    headless: true,
-  });
+  if (!ready) throw new Error("Test API readiness timed out");
+  const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const executablePath = process.env.CHROME_PATH || (!process.env.CI && existsSync(macChrome) ? macChrome : undefined);
+  browser = await chromium.launch({ ...(executablePath ? { executablePath } : {}), headless: true });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1050 },
     locale: "zh-CN",
@@ -71,7 +87,7 @@ try {
   page.on("response", (response) => {
     if (
       response.status() >= 400 &&
-      !(response.status() === 401 && response.url().endsWith("/api/state"))
+      !(response.status() === 401 && new URL(response.url()).pathname === "/api/state")
     )
       errors.push(`${response.status()} ${response.url()}`);
   });
@@ -109,16 +125,30 @@ try {
   step = "meeting";
   await page.getByRole("button", { name: "开启一次家庭会议" }).click();
   await page.getByLabel("空间名称").fill("秋日家庭旅行");
+  await page.getByLabel("持续约束", { exact: true }).fill("总预算不超过 8000 元\n不能影响孩子上课");
+  assert.equal(await page.getByLabel("讨论方式").inputValue(), "independent");
   await page
     .getByLabel("议题内容")
     .fill("下个月安排一次家庭旅行，预算 8000 元，别影响孩子上课。");
   await page.getByRole("button", { name: "开始讨论", exact: true }).click();
   await waitText("讨论有了方向，决定交给你们");
+  await waitText("工具权限");
+  await waitText("仅用户确认后执行");
+  await page.getByRole("button", { name: "检索本地 MCP 参考库", exact: true }).click();
+  await waitText("MCP 连接与检索成功");
+  await waitText("familyagent://reference/goal");
+  await waitText("本次空间的持续约束");
+  await waitText("总预算不超过 8000 元");
+  assert.equal(await page.getByText("独立首轮观点", { exact: true }).count(), 3);
+  await waitText("AI 共同建议 · 尚待成员确认");
+  await waitText("分歧与待澄清取舍 · AI 整理");
+  await waitText("这些建议是否存在资源取舍？请成员补充实际约束。");
   await page
     .getByRole("button", { name: "运行观察", exact: true })
     .last()
     .click();
   await waitText("检查点已保存");
+  await waitText("上下文预算检查完成");
   await page.screenshot({
     path: path.join(artifacts, "02-meeting.png"),
     fullPage: true,
@@ -242,11 +272,19 @@ try {
   await clickNav("个人规划");
   await page.getByRole("button", { name: "创建空间", exact: true }).click();
   await page.getByLabel("空间名称").fill("三个月英语计划");
+  await page.getByRole("checkbox", { name: "参考我主动保存的个人记忆" }).check();
   await page.getByLabel("议题内容").fill("帮我制定三个月英语学习计划，每天半小时。");
   await page.getByRole("button", { name: "开始讨论", exact: true }).click();
   await page
     .getByRole("button", { name: "确认并创建任务", exact: true })
     .waitFor({ timeout: 15000 });
+  await page.getByText("本次输入参考记忆（1 条）", { exact: true }).click();
+  await waitText("来源：用户主动保存");
+  const memoryState = await (await page.request.get(`${base}/api/state`)).json();
+  const sourceMemory = memoryState.memories.find((m) => m.content === "每天晚上只安排 30 分钟学习。");
+  assert.ok(sourceMemory);
+  assert.equal((await page.request.delete(`${base}/api/memories/${sourceMemory.id}`)).status(), 200);
+  await waitText("原记忆已删除或不可访问。");
   await page
     .getByRole("button", { name: "确认并创建任务", exact: true })
     .click();
@@ -298,6 +336,35 @@ try {
     path: path.join(artifacts, "06-observer.png"),
     fullPage: true,
   });
+  step = "message pagination";
+  const pagingResponse = await context.request.post(`${base}/api/conversations`, { data: { title: "分页合成验证", mode: "meeting" } });
+  assert.equal(pagingResponse.status(), 201);
+  const paging = await pagingResponse.json();
+  const appendMessages = (start, end) => execFileSync(python, ["-c", `
+import json,sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as conn:
+    for i in range(int(sys.argv[3]),int(sys.argv[4])):
+        obj={'id':'msg_paging_'+str(i),'conversation_id':sys.argv[2],'actor_type':'human','actor_id':'synthetic','actor_name':'分页验证','content':'分页消息 '+str(i),'created_at':'2026-10-25T00:00:00Z'}
+        conn.execute('INSERT INTO messages(id,data) VALUES(?,?)',(obj['id'],json.dumps(obj)))
+`, path.join(temp, "qa.sqlite3"), paging.id, String(start), String(end)]);
+  appendMessages(0, 125);
+  await page.reload();
+  await clickNav("家庭会议");
+  await page.getByRole("button", { name: /分页合成验证/ }).click();
+  await page.getByText("分页消息 124", { exact: true }).waitFor();
+  assert.equal(await page.locator("article.message").count(), 50);
+  await page.getByRole("button", { name: "加载更早的消息", exact: true }).click();
+  await page.getByText("分页消息 25", { exact: true }).waitFor();
+  assert.equal(await page.locator("article.message").count(), 100);
+  // Polling must preserve the already loaded older page.
+  appendMessages(125, 128);
+  await page.getByText("分页消息 127", { exact: true }).waitFor();
+  assert.equal(await page.locator("article.message").count(), 103);
+  await page.getByRole("button", { name: "加载更早的消息", exact: true }).click();
+  await page.getByText("分页消息 0", { exact: true }).waitFor();
+  assert.equal(await page.locator("article.message").count(), 128);
+  assert.equal(await page.getByRole("button", { name: "加载更早的消息", exact: true }).count(), 0);
+  await clickNav("运行观察");
   step = "mobile";
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "打开导航" }).click();
@@ -354,5 +421,10 @@ try {
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close();
-  server.kill("SIGTERM");
+  if (server.exitCode === null && !spawnError) {
+    const exited = once(server, "exit");
+    server.kill("SIGTERM");
+    const timer = setTimeout(() => server.kill("SIGKILL"), 5000);
+    try { await exited; } finally { clearTimeout(timer); }
+  }
 }

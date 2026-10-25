@@ -196,7 +196,7 @@ def test_memory_never_crosses_to_meeting_or_support(setup):
     harness.gateway.generate = lambda context: (captured.append(context) or original(context))
     for mode in ["planning", "meeting", "support"]:
         conv = conversation(client, mode, use_memory=True)
-        drain(harness, client, send(client, conv))
+        drain(harness, client, send(client, conv, content="请参考个人偏好安排旅行"))
     assert captured[0]["memories"][0]["content"] == "只属于个人的偏好"
     assert all(not c["memories"] for c in captured if c["mode"] in {"meeting", "support"})
 

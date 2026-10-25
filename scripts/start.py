@@ -29,16 +29,18 @@ def main():
         sys.exit("请先安装 Node.js 20.19+ 或 22.12+。")
     python = ROOT / ".venv312/bin/python"
     if not python.exists():
-        candidates = [shutil.which("python3.12"), "/Users/jimmy/anaconda3/envs/agent/bin/python3.12", sys.executable]
+        candidates = [shutil.which("python3.12"), sys.executable]
         interpreter = next((c for c in candidates if c and Path(c).exists()), None)
-        version = subprocess.check_output([interpreter, "-c", "import sys; print(sys.version_info >= (3, 10))"], text=True).strip()
+        version = subprocess.check_output([interpreter, "-c", "import sys; print(sys.version_info >= (3, 11))"], text=True).strip()
         if version != "True":
-            sys.exit("需要 Python 3.10+，推荐 Python 3.12。")
+            sys.exit("当前依赖需要 Python 3.11+，推荐 Python 3.12。")
         run([interpreter, "-m", "venv", ".venv312"])
-    check = subprocess.run([str(python), "-c", "import fastapi, uvicorn, httpx"], capture_output=True)
+    if subprocess.check_output([str(python), "-c", "import sys; print(sys.version_info >= (3, 11))"], text=True).strip() != "True":
+        sys.exit("当前虚拟环境低于 Python 3.11，请用 Python 3.12 准备项目环境。")
+    check = subprocess.run([str(python), "-c", "import fastapi, uvicorn, httpx, mcp"], capture_output=True)
     if check.returncode:
         print("正在准备后端依赖…", flush=True)
-        run([str(python), "-m", "pip", "install", "-r", "requirements.lock"])
+        run([str(python), "-m", "pip", "install", "--only-binary=cryptography,cffi,rpds-py,pydantic-core", "-r", "requirements.lock"])
     # Re-exec in the project environment before importing dependencies.
     if Path(sys.executable).parent != python.parent:
         os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])

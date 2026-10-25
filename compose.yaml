@@ -1,0 +1,35 @@
+x-runtime: &runtime
+  image: familyagent:local
+  build: .
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:mode=1777,size=64m]
+  stop_grace_period: 75s
+  volumes:
+    - familyagent-data:/data
+  environment: &demo
+    FAMILYAGENT_PROVIDER: demo
+    FAMILYAGENT_DEMO_LOGIN: '0'
+    FAMILYAGENT_EMBEDDED_WORKER: '0'
+    FAMILYAGENT_DB: /data/familyagent.sqlite3
+
+services:
+  api:
+    <<: *runtime
+    command: [api]
+    ports:
+      - '127.0.0.1:${FAMILYAGENT_DOCKER_PORT:-8080}:8000'
+  worker:
+    <<: *runtime
+    command: [worker]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  familyagent-data:

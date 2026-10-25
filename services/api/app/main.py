@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -22,6 +22,9 @@ from .schemas import (Acceptance, CharacterInput, ConversationInput, FinanceInpu
 from .seed import seed
 from .tools import calculate_budget
 from .config import runtime_revision
+from .memory import resolve_sources
+from .tool_registry import registry, ToolContext, ToolError, ToolDenied, ToolArgumentsError
+from .mcp_client import ReferenceArguments
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -140,13 +143,14 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
         return {"token": token, "expires_in": "24 小时，仅可使用一次"}
 
     @app.get("/api/state")
-    def state(user=Depends(current_user)):
+    def state(compact: bool = False, user=Depends(current_user)):
         convs = [c for c in store.all("conversation") if can_access(user, c)]
         ids = {c["id"] for c in convs}
         return {"user": user, "members": store.members(user["household"]), "provider": harness.gateway.provider,
+                "tool_catalog": [{key: tool[key] for key in ("name", "description", "risk", "requires_approval", "transport")} for tool in registry.catalog()],
                 "demo_login": demo, "characters": [c for c in store.all("character") if c.get("builtin") or c["owner_id"] == user["id"]],
                 "conversations": sorted(convs, key=lambda c: c["updated_at"], reverse=True),
-                "runs": [r for r in store.all("run") if r["conversation_id"] in ids],
+                "runs": store.run_summaries(ids) if compact else [r for r in store.all("run") if r["conversation_id"] in ids],
                 "tasks": [t for t in store.all("task") if t["owner_id"] == user["id"]],
                 "plans": [p for p in store.all("plan") if p["owner_id"] == user["id"]],
                 "memories": [m for m in store.all("memory") if m["owner_id"] == user["id"]],
@@ -190,15 +194,46 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             raise HTTPException(422, "只能邀请本家庭成员")
         obj = {"id": uid("conv_"), "owner_id": user["id"], "household": user["household"], "scope": "family" if data.mode == "meeting" else "private", "participants": participants,
                "mode": data.mode, "title": data.title.strip(), "character_ids": ids, "character_snapshots": chars,
-               "use_memory": data.use_memory and data.mode not in {"support", "meeting"}, "orchestration": data.orchestration, "status": "draft", "created_at": now(), "updated_at": now()}
+               "use_memory": data.use_memory and data.mode not in {"support", "meeting"}, "orchestration": data.orchestration, "constraints": data.constraints, "status": "draft", "created_at": now(), "updated_at": now()}
         with store.tx() as conn:
             store.put("conversation", obj, conn)
         return obj
 
-    @app.get("/api/conversations/{key}")
-    def get_conversation(key: str, user=Depends(current_user)):
+    def message_page(key, user, limit, before=None, after=None):
         obj = accessible(key, user, "conv_")
-        return {"conversation": obj, "messages": [m for m in store.all("message") if m["conversation_id"] == key], "runs": [r for r in store.all("run") if r["conversation_id"] == key]}
+        try:
+            result = store.message_page(key, limit=limit, before=before, after=after)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        for message in result["messages"]:
+            message["memory_sources"] = resolve_sources(store, message.get("memory_sources", []), user, obj)
+        return obj, result
+
+    @app.get("/api/conversations/{key}/messages")
+    def get_messages(key: str, limit: int = Query(50, ge=1, le=100), before: str | None = None,
+                     after: str | None = None, user=Depends(current_user)):
+        return message_page(key, user, limit, before, after)[1]
+
+    @app.get("/api/conversations/{key}/messages/{message_id}/sources")
+    def get_message_sources(key: str, message_id: str, user=Depends(current_user)):
+        obj = accessible(key, user, "conv_")
+        with store.connect() as conn:
+            row = conn.execute("SELECT id FROM messages WHERE id=? AND conversation_id=?", (message_id, key)).fetchone()
+            if row is None:
+                raise HTTPException(404, "消息不存在")
+            message = store.get(row[0], conn)
+        return resolve_sources(store, message.get("memory_sources", []), user, obj)
+
+    @app.get("/api/conversations/{key}")
+    def get_conversation(key: str, compact: bool = False, after: str | None = None, user=Depends(current_user)):
+        if compact:
+            obj, result = message_page(key, user, 50, after=after)
+            return {"conversation": obj, **result, "runs": store.conversation_records("run", key, limit=1)}
+        obj = accessible(key, user, "conv_")
+        messages = store.conversation_records("message", key)
+        for message in messages:
+            message["memory_sources"] = resolve_sources(store, message.get("memory_sources", []), user, obj)
+        return {"conversation": obj, "messages": messages, "runs": store.conversation_records("run", key)}
 
     @app.post("/api/conversations/{key}/messages", status_code=202)
     def send_message(key: str, data: MessageInput, user=Depends(current_user)):
@@ -309,17 +344,16 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
                     run["decision"] = {**run["proposal"], "approvals": dict(run["approvals"]), "confirmed_at": now()}
                     store.event(key, "decision.confirmed", {"note": "只确认讨论结论，尚未创建任务"}, conn)
                 else:
-                    task_ids = []
-                    for index, title in enumerate(run["proposal"]["actions"]):
-                        task = {"id": f"task_{key}_{index}", "owner_id": run["owner_id"], "title": title, "status": "todo", "due_at": None, "source_run": key, "created_at": now(), "notified": False}
-                        store.put("task", task, conn)
-                        task_ids.append(task["id"])
+                    store.put("run", run, conn)
+                    try:
+                        task_ids = registry.execute("task.create_batch", {"actions": run["proposal"]["actions"]}, ToolContext(store, conn, user, "approval", run=run))
+                    except ToolError as exc:
+                        raise HTTPException(403 if isinstance(exc, ToolDenied) else 422 if isinstance(exc, ToolArgumentsError) else 500, str(exc)) from None
                     run["created_task_ids"] = task_ids
                     if run["mode"] == "planning" or run.get("intent", {}).get("name") == "planning":
                         plan = {"id": "plan_" + key, "owner_id": run["owner_id"], "title": run["prompt"][:100], "source_run": key,
                                 "conversation_id": run["conversation_id"], "milestones": run["results"][-1].get("proposals", []), "version": 1, "created_at": now()}
                         store.put("plan", plan, conn)
-                    store.event(key, "tool.completed", {"name": "task.create_batch", "count": len(task_ids), "idempotency_key": key}, conn)
                 run["status"] = "succeeded"
                 conv = store.get(run["conversation_id"], conn)
                 conv["status"] = "concluded" if run.get("decision") else "active"
@@ -334,7 +368,7 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
             run = run_for(key, user, conn)
             if run["owner_id"] != user["id"]:
                 raise HTTPException(403, "只有发起人可以为自己整理任务草案")
-            siblings = [r for r in store.all("run", conn) if r["conversation_id"] == run["conversation_id"]]
+            siblings = store.conversation_records("run", run["conversation_id"], conn)
             if not siblings or siblings[-1]["id"] != key:
                 raise HTTPException(409, "已有后续讨论，请使用最新回复")
             if run["status"] == "waiting_approval" and run.get("proposal", {}).get("kind") == "tasks":
@@ -396,9 +430,20 @@ def create_app(db_path=None, start_worker=True, demo=None, gateway=None):
     @app.post("/api/finance/calculate")
     def calculate(data: FinanceInput, user=Depends(current_user)):
         try:
-            return calculate_budget(data.model_dump())
+            return registry.execute("finance.calculate", data.model_dump(), ToolContext(store, None, user, "api"))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
+
+    @app.get("/api/tools")
+    def tools(user=Depends(current_user)):
+        return {"tools": registry.catalog(), "note": "目录用于说明；模型只接收当前角色获准的工具，目录本身不授予执行权限"}
+
+    @app.post("/api/mcp/reference/probe")
+    def mcp_reference(data: ReferenceArguments, user=Depends(current_user)):
+        try:
+            return registry.execute("reference.search", data.model_dump(), ToolContext(store, None, user, "probe"))
+        except ToolError as exc:
+            raise HTTPException(422 if isinstance(exc, ToolArgumentsError) else 502, str(exc)) from None
 
     @app.post("/api/notifications/{key}/read")
     def read_notification(key: str, user=Depends(current_user)):
