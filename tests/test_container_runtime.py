@@ -4,6 +4,16 @@ import pytest
 from services.api.app import container_health, container_start
 from services.api.app.config import runtime_revision
 from services.api.app.models import ModelGateway
+from services.api.app.worker_health import alive
+
+
+def test_worker_health_requires_worker_module_process(tmp_path):
+    process = tmp_path / '7'
+    process.mkdir()
+    (process / 'cmdline').write_bytes(b'python\0-m\0services.api.app.worker_health\0')
+    assert not alive(tmp_path)
+    (process / 'cmdline').write_bytes(b'python\0-m\0services.api.app.worker\0')
+    assert alive(tmp_path)
 
 
 def test_entrypoint_roles_preserve_exec_signal_delivery():

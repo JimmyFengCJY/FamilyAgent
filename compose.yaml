@@ -27,7 +27,11 @@ services:
     <<: *runtime
     command: [worker]
     healthcheck:
-      disable: true
+      test: [CMD, python, -m, services.api.app.worker_health]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
     depends_on:
       api:
         condition: service_healthy
