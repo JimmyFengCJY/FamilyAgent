@@ -5,7 +5,7 @@
 | 项目 | 已完成 | 尚未完成 |
 |---|---|---|
 | Docker | 云端构建、API/Worker/MCP/任务及重启持久化全部通过 | 本机 Docker Hub TLS 超时 |
-| GitHub CI | 已推送 main，三作业全部 success（运行 40226597155） | 最终文档和资产上传后的 CI 待执行 |
+| GitHub CI | 已推送 main，三作业全部 success（运行 40226597155） | 文档/素材提交 3c123be 的 CI 40340716844 也已三项通过 |
 | 真实对照 | 40 次授权调用已执行并停止，保留成功与失败报告 | 供应商故障导致配对不完整，人工质量评分未完成 |
 | 开源展示 | MIT、贡献/安全指南、架构与面试材料、合成截图与 44 秒录屏随本次交付提交发布 | 真实模型配对与人工评分仍待后续完成 |
 
@@ -16,3 +16,5 @@
 展示材料：[架构](12-architecture.md)、[演示和面试](13-demo-and-interview.md)、[真实评测](14-evaluation.md)、[录屏](assets/demo.webm)。录屏为独立临时数据库中的确定性 demo，不能当作真实模型效果演示。
 
 上传阻塞处理记录：重新核验后 GitHub 连接器已恢复；素材以 Git blob 上传，并随 README、评测汇总、进度和优化对比一起纳入交付提交。运行时行为未变。本次提交的 CI 状态见 [工作流列表](https://github.com/JimmyFengCJY/FamilyAgent/actions/workflows/ci.yml)，上表固定运行号对应此前已验证代码。
+
+最终同步验收：main 已发布 3c123be，11 个远端文件的 Git blob 哈希逐一与本地一致；[最终材料 CI 40340716844](https://github.com/JimmyFengCJY/FamilyAgent/actions/runs/40340716844) 三作业全部 success。上传阻塞已解除，文档和录屏已可从仓库访问。本段为验收记录更新，不改变运行时代码。
