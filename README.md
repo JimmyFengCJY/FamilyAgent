@@ -2,7 +2,16 @@
 
 一个可以实际操作的个人与家庭多 Agent 协作空间。React + TypeScript 网页，FastAPI 后端，SQLite 持久化，统一 Harness 与持久 Worker。
 
-## Docker / Compose（R14）
+[![Offline quality](https://github.com/JimmyFengCJY/FamilyAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/JimmyFengCJY/FamilyAgent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+![家庭会议合成演示](docs/assets/meeting.png)
+
+[44 秒网页演示（合成数据、demo 回复）](docs/assets/demo.webm) · [架构与取舍](docs/12-architecture.md) · [五分钟演示与面试准备](docs/13-demo-and-interview.md) · [贡献指南](CONTRIBUTING.md)
+
+核心实现包括三种编排策略、角色上下文、带引用的分歧汇总、人工审批、私有记忆检索、MCP stdio 工具、事务检查点、租约心跳和故障恢复。Agent 通过 Harness 的结构化结果与上下文通信；当前没有实现跨服务标准 A2A 协议。
+
+## Docker / Compose
 
 已提供 API + 独立 Worker、共享持久卷和默认 demo 模式：
 
@@ -12,7 +21,7 @@ docker compose --env-file /dev/null up --build -d --wait
 
 构建/启动成功后访问 `http://127.0.0.1:8080/`，注册本地账号即可体验，无需模型密钥。默认不加载本机模型配置或绑定主机数据库。真实模型覆盖、数据管理与冒烟步骤见 [容器部署说明](docs/11-containers.md)。
 
-**本轮真实镜像构建尚未通过：Docker Hub 匿名令牌 TLS 请求超时，所需基础镜像也未缓存。已完成 Compose/入口测试和非容器 API/Worker 拓扑验证，不能据此宣称容器部署已成功。**
+**云端容器已验收通过**：[CI 40226597155](https://github.com/JimmyFengCJY/FamilyAgent/actions/runs/40226597155) 实际完成镜像构建、API/独立 Worker、MCP、任务与重启持久化验证。本机 Docker Hub TLS 超时仍待解决，不代表本机 8080 已运行。
 
 ## 先体验
 
@@ -32,7 +41,7 @@ python3 scripts/start.py
 
 各轮改前/改后、具体例子、收益和取舍见 [优化对比记录](docs/04-improvements.md)。
 
-每轮优化、验证证据、未完成事项和下一步持续记录在 [项目进度](docs/PROGRESS.md)。本轮新增专家首轮独立分析及带原文引用的分歧汇总，详见 R3。
+每轮优化、验证证据、未完成事项和下一步持续记录在 [项目进度](docs/PROGRESS.md)。当前已推进到 R15：真实 CI、容器验收、限额真实模型评测与开源材料。真实质量结论及未完成项以最新进度记录为准。
 
 ## 推荐验证路径
 

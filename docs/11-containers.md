@@ -87,3 +87,9 @@ CI 新增 containers 作业，配置上述构建、冒烟、重启验证、合�
 - 没有成功启动本项目容器，8080 页面尚未运行。没有推送镜像/代码、触发云端 CI、使用付费模型或打开默认业务库。8000/8011 原服务未重启，不宣称已加载本轮容器模块。
 
 下一步先在镜像仓库可达的环境完成实际 build/up/smoke/restart 验收，再确认非 root 卷权限、只读文件系统与 MCP 子进程；随后完善开源演示和贡献材料。
+
+## R15 云端验收更新（2026-10-26）
+
+[运行 40226597155](https://github.com/JimmyFengCJY/FamilyAgent/actions/runs/40226597155) 三作业全部成功，容器作业真实完成 build/up、网页资源/注册/独立 Worker/MCP/任务冒烟、重启与持久化检查，随后清理专用卷。步骤证据见 r15-ci-evidence.json。
+
+运行暴露并修复了流式 YAML tmpfs 逗号解析问题与 Compose --wait 的 Worker 健康检查问题。当前 Worker 使用独立 worker_health 模块检查 /proc 进程参数，不向不存在的 API 端口请求；该探针只代表进程存在，业务可用性由冒烟检查覆盖，不能检测所有死锁。本机 Docker Hub TLS 超时仍未解决，云端成功不代表本机已经启动容器。
